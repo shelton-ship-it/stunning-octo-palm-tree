@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Todo o tráfego real da app é HTTPS (api.pixgo.qzz.io, pixel.pixgo.qzz.io,
+  app.pixgo.qzz.io, pixgo.qzz.io, cdn.jsdelivr.net, raw.githubusercontent.com,
+  copyright.pixgo.qzz.io). A excepção de cleartext para 127.0.0.1 que
+  existia aqui era para um DecryptProxyServer local que já não existe — o
+  VOD passou a usar WebView para o /embed/watch real (ver watch_screen.dart),
+  sem proxy nenhum. Removida.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+</network-security-config>

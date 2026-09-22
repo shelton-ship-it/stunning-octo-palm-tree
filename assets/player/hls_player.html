@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<!--
+  hls_player.html — player de VOD do Pixgo Flutter.
+
+  Em vez de reimplementar o handshake ECDH + decriptação ChaCha20 em Dart
+  (superfície de bugs paralela, sem garantia de paridade byte-a-byte com o
+  backend), esta página reutiliza fielmente o MESMO motor já testado em
+  produção no frontend web: hls.js + BinLoader + worker ChaCha20 (chunk-v2),
+  transcrito quase verbatim de src/components/player/ShakaPlayer.tsx.
+
+  A WebView (webview_flutter) carrega esta página como asset local; o Dart
+  faz o handshake ECDH nativamente (imune a CORS — ver nota mais abaixo) e
+  injecta o resultado (masterUrl, drmKeyHex, quality, startTime) via
+  `window.startPixgoPlayer(config)` depois de onPageFinished, e esta página
+  comunica de volta com o Flutter via `PixgoBridge.postMessage(json)`.
+
+  Mensagens PixgoBridge -> Flutter:
+    {type:'loading'}
+    {type:'ready', quality}
+    {type:'quality', quality}
+    {type:'error', stage, message}
+    {type:'progress', currentTime, duration}
+    {type:'heartbeat', currentTime}
+    {type:'ended'}
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <style>
+    html, body { margin:0; padding:0; background:#000; width:100%; height:100%; overflow:hidden; }
+    video { width:100%; height:100%; background:#000; object-fit:contain; }
+  </style>
+</head>
+<body>
+  <video id="v" playsinline webkit-playsinline controls></video>
+
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <script>
+  'use strict';
+
+  function bridge(msg) {
+    try {
+      if (window.PixgoBridge && window.PixgoBridge.postMessage) {
+        window.PixgoBridge.postMessage(JSON.stringify(msg));
+      }
+    } catch (e) { /* WebView pode ainda não ter o channel pronto */ }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Worker ChaCha20 (chunk-v2) — cópia fiel de WORKER_SRC em ShakaPlayer.tsx
+  // ───────────────────────────────────────────────────────────────────────
+  var WORKER_SRC = "\
+'use strict';\
+function rotl(v,n){return(v<<n)|(v>>>(32-n));}\
+function hexToU8(hex){const b=new Uint8Array(hex.length>>>1);for(let i=0;i<hex.length;i+=2)b[i>>>1]=parseInt(hex.slice(i,i+2),16);return b;}\
+const C0=0x61707865,C1=0x3320646e,C2=0x79622d32,C3=0x6b206574;\
+function chacha20Block(key,ctr,nonce){\
+  const kw=new Uint32Array(key.buffer,key.byteOffset,8);\
+  const nw=new Uint32Array(nonce.buffer,nonce.byteOffset,3);\
+  const w=new Uint32Array(16);\
+  w[0]=C0;w[1]=C1;w[2]=C2;w[3]=C3;\
+  w[4]=kw[0];w[5]=kw[1];w[6]=kw[2];w[7]=kw[3];\
+  w[8]=kw[4];w[9]=kw[5];w[10]=kw[6];w[11]=kw[7];\
+  w[12]=ctr;w[13]=nw[0];w[14]=nw[1];w[15]=nw[2];\
+  const s0=w[0],s1=w[1],s2=w[2],s3=w[3],s4=w[4],s5=w[5],s6=w[6],s7=w[7],\
+        s8=w[8],s9=w[9],s10=w[10],s11=w[11],s12=w[12],s13=w[13],s14=w[14],s15=w[15];\
+  for(let i=0;i<10;i++){\
+    w[0]=(w[0]+w[4])|0;w[12]^=w[0];w[12]=rotl(w[12],16);w[8]=(w[8]+w[12])|0;w[4]^=w[8];w[4]=rotl(w[4],12);w[0]=(w[0]+w[4])|0;w[12]^=w[0];w[12]=rotl(w[12],8);w[8]=(w[8]+w[12])|0;w[4]^=w[8];w[4]=rotl(w[4],7);\
+    w[1]=(w[1]+w[5])|0;w[13]^=w[1];w[13]=rotl(w[13],16);w[9]=(w[9]+w[13])|0;w[5]^=w[9];w[5]=rotl(w[5],12);w[1]=(w[1]+w[5])|0;w[13]^=w[1];w[13]=rotl(w[13],8);w[9]=(w[9]+w[13])|0;w[5]^=w[9];w[5]=rotl(w[5],7);\
+    w[2]=(w[2]+w[6])|0;w[14]^=w[2];w[14]=rotl(w[14],16);w[10]=(w[10]+w[14])|0;w[6]^=w[10];w[6]=rotl(w[6],12);w[2]=(w[2]+w[6])|0;w[14]^=w[2];w[14]=rotl(w[14],8);w[10]=(w[10]+w[14])|0;w[6]^=w[10];w[6]=rotl(w[6],7);\
+    w[3]=(w[3]+w[7])|0;w[15]^=w[3];w[15]=rotl(w[15],16);w[11]=(w[11]+w[15])|0;w[7]^=w[11];w[7]=rotl(w[7],12);w[3]=(w[3]+w[7])|0;w[15]^=w[3];w[15]=rotl(w[15],8);w[11]=(w[11]+w[15])|0;w[7]^=w[11];w[7]=rotl(w[7],7);\
+    w[0]=(w[0]+w[5])|0;w[15]^=w[0];w[15]=rotl(w[15],16);w[10]=(w[10]+w[15])|0;w[5]^=w[10];w[5]=rotl(w[5],12);w[0]=(w[0]+w[5])|0;w[15]^=w[0];w[15]=rotl(w[15],8);w[10]=(w[10]+w[15])|0;w[5]^=w[10];w[5]=rotl(w[5],7);\
+    w[1]=(w[1]+w[6])|0;w[12]^=w[1];w[12]=rotl(w[12],16);w[11]=(w[11]+w[12])|0;w[6]^=w[11];w[6]=rotl(w[6],12);w[1]=(w[1]+w[6])|0;w[12]^=w[1];w[12]=rotl(w[12],8);w[11]=(w[11]+w[12])|0;w[6]^=w[11];w[6]=rotl(w[6],7);\
+    w[2]=(w[2]+w[7])|0;w[13]^=w[2];w[13]=rotl(w[13],16);w[8]=(w[8]+w[13])|0;w[7]^=w[8];w[7]=rotl(w[7],12);w[2]=(w[2]+w[7])|0;w[13]^=w[2];w[13]=rotl(w[13],8);w[8]=(w[8]+w[13])|0;w[7]^=w[8];w[7]=rotl(w[7],7);\
+    w[3]=(w[3]+w[4])|0;w[14]^=w[3];w[14]=rotl(w[14],16);w[9]=(w[9]+w[14])|0;w[4]^=w[9];w[4]=rotl(w[4],12);w[3]=(w[3]+w[4])|0;w[14]^=w[3];w[14]=rotl(w[14],8);w[9]=(w[9]+w[14])|0;w[4]^=w[9];w[4]=rotl(w[4],7);\
+  }\
+  w[0]=(w[0]+s0)|0;w[1]=(w[1]+s1)|0;w[2]=(w[2]+s2)|0;w[3]=(w[3]+s3)|0;\
+  w[4]=(w[4]+s4)|0;w[5]=(w[5]+s5)|0;w[6]=(w[6]+s6)|0;w[7]=(w[7]+s7)|0;\
+  w[8]=(w[8]+s8)|0;w[9]=(w[9]+s9)|0;w[10]=(w[10]+s10)|0;w[11]=(w[11]+s11)|0;\
+  w[12]=(w[12]+s12)|0;w[13]=(w[13]+s13)|0;w[14]=(w[14]+s14)|0;w[15]=(w[15]+s15)|0;\
+  const ks=new Uint8Array(64);const dv=new DataView(ks.buffer);\
+  for(let i=0;i<16;i++)dv.setUint32(i*4,w[i],true);\
+  return ks;\
+}\
+function decrypt(cipher,key,nonce){\
+  const out=new Uint8Array(cipher.length);let off=0,ctr=1;\
+  while(off<cipher.length){const ks=chacha20Block(key,ctr++,nonce);const n=Math.min(64,cipher.length-off);for(let i=0;i<n;i++)out[off+i]=cipher[off+i]^ks[i];off+=n;}\
+  return out;\
+}\
+const _keys=new Map();\
+function getKey(hex){if(!_keys.has(hex))_keys.set(hex,hexToU8(hex));return _keys.get(hex);}\
+const _segs=new Map();\
+function segStart(segId,keyHex){\
+  _segs.set(segId,{key:getKey(keyHex),phase:'hdr',hdrBuf:new Uint8Array(4),hdrOff:0,nChunks:0,chunksRead:0,chdrBuf:new Uint8Array(16),chdrOff:0,chunkNonce:null,chunkLen:0,chunkBuf:null,chunkOff:0,bytesEmitted:0});\
+}\
+function segPush(segId,incoming){\
+  const st=_segs.get(segId);if(!st)return;let pos=0;const len=incoming.length;\
+  while(pos<len){\
+    if(st.phase==='hdr'){const take=Math.min(4-st.hdrOff,len-pos);st.hdrBuf.set(incoming.subarray(pos,pos+take),st.hdrOff);st.hdrOff+=take;pos+=take;if(st.hdrOff===4){st.nChunks=new DataView(st.hdrBuf.buffer).getUint32(0,true);if(!st.nChunks||st.nChunks>=100000){_segs.delete(segId);self.postMessage({type:'seg_done',segId});return;}st.hdrOff=0;st.phase='chdr';}continue;}\
+    if(st.phase==='chdr'){const take=Math.min(16-st.chdrOff,len-pos);st.chdrBuf.set(incoming.subarray(pos,pos+take),st.chdrOff);st.chdrOff+=take;pos+=take;if(st.chdrOff===16){const view=new DataView(st.chdrBuf.buffer);st.chunkNonce=st.chdrBuf.slice(0,12);st.chunkLen=view.getUint32(12,true);st.chunkBuf=new Uint8Array(st.chunkLen);st.chunkOff=0;st.chdrOff=0;st.phase='cbody';}continue;}\
+    if(st.phase==='cbody'){const take=Math.min(st.chunkLen-st.chunkOff,len-pos);st.chunkBuf.set(incoming.subarray(pos,pos+take),st.chunkOff);st.chunkOff+=take;pos+=take;\
+      if(st.chunkOff===st.chunkLen){const plain=decrypt(st.chunkBuf,st.key,st.chunkNonce).buffer;self.postMessage({type:'seg_plain',segId,plain},[plain]);st.bytesEmitted+=st.chunkLen;st.chunkBuf=null;st.chunkNonce=null;st.chunkOff=0;st.chunkLen=0;st.chunksRead++;st.phase=st.chunksRead<st.nChunks?'chdr':'done';}continue;}\
+    break;\
+  }\
+}\
+function segEnd(segId){const st=_segs.get(segId);_segs.delete(segId);self.postMessage({type:'seg_done',segId,bytesTotal:st?st.bytesEmitted:0});}\
+self.onmessage=function({data}){\
+  const{type,segId}=data;\
+  if(type==='seg_start'){segStart(segId,data.keyHex);return;}\
+  if(type==='seg_bytes'){segPush(segId,new Uint8Array(data.chunk));return;}\
+  if(type==='seg_end'){segEnd(segId);return;}\
+  if(type==='seg_abort'){_segs.delete(segId);return;}\
+};\
+";
+
+  var _worker = null, _workerBlob = null, _handlers = new Map(), _segCtr = 0;
+
+  function getWorker() {
+    if (_worker) return _worker;
+    if (!_workerBlob) _workerBlob = URL.createObjectURL(new Blob([WORKER_SRC], { type: 'application/javascript' }));
+    _worker = new Worker(_workerBlob);
+    _worker.onerror = function (e) {
+      var err = new Error(e.message || 'Worker crashed');
+      _handlers.forEach(function (h) { h.onError(err); });
+      _handlers.clear();
+      _worker = null;
+      bridge({ type: 'error', stage: 'decrypt', message: err.message });
+    };
+    _worker.onmessage = function (ev) {
+      var data = ev.data;
+      var h = _handlers.get(data.segId);
+      if (!h) return;
+      if (data.type === 'seg_plain') h.onPlain(data.plain);
+      else if (data.type === 'seg_done') { _handlers.delete(data.segId); h.onDone(data.bytesTotal || 0); }
+    };
+    return _worker;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // BinLoader — cópia fiel de makeBinLoader() em ShakaPlayer.tsx
+  //
+  // FIX (correcção crítica de transcrição): a primeira versão usava um
+  // padrão manual de herança "estilo ES5" (`_super.call(this, cfg)`) para
+  // estender Hls.DefaultConfig.loader. Isso quebra sempre que a classe base
+  // do hls.js for uma classe ES6 real — classes ES6 não podem ser invocadas
+  // via `.call()`/`.apply()`, só via `new`, e isso lança
+  // "TypeError: Class constructor cannot be invoked without 'new'". Corrigido
+  // para `class BinLoader extends DefaultLoader` nativo, que é seguro tanto
+  // para bases ES6 como para construtores "à moda antiga" — exactamente a
+  // mesma sintaxe do TSX original, sem tradução manual.
+  // ───────────────────────────────────────────────────────────────────────
+  function makeBinLoader(Hls, keyHex) {
+    var DefaultLoader = Hls.DefaultConfig.loader;
+
+    class BinLoader extends DefaultLoader {
+      constructor(cfg) {
+        super(cfg);
+        this._abort = null;
+      }
+
+      load(context, _config, callbacks) {
+        if (!context.url || !context.url.endsWith('.bin')) {
+          return super.load(context, _config, callbacks);
+        }
+
+        const t0 = performance.now();
+        const ctrl = new AbortController();
+        this._abort = ctrl;
+        const segId = 's' + (++_segCtr);
+        const isInit = typeof callbacks.onProgress !== 'function';
+        let bytesLoaded = 0, tFirst = 0;
+        const initChunks = [];
+
+        function makeStats(loaded, total, end) {
+          return {
+            aborted: false, loaded: loaded, total: total, retry: 0, chunkCount: 0, bwEstimate: 0,
+            loading: { start: t0, first: tFirst || t0, end: end },
+            parsing: { start: end, end: end },
+            buffering: { start: 0, first: 0, end: 0 },
+          };
+        }
+
+        _handlers.set(segId, {
+          onPlain: function (chunk) {
+            const now = performance.now();
+            if (!tFirst) tFirst = now;
+            bytesLoaded += chunk.byteLength;
+            if (isInit) {
+              initChunks.push(chunk);
+            } else {
+              callbacks.onProgress(makeStats(bytesLoaded, 0, now), context, chunk, null);
+            }
+          },
+          onDone: function (bytesTotal) {
+            const now = performance.now();
+            if (isInit) {
+              const total = initChunks.reduce((s, c) => s + c.byteLength, 0);
+              const merged = new Uint8Array(total);
+              let off = 0;
+              for (const c of initChunks) { merged.set(new Uint8Array(c), off); off += c.byteLength; }
+              callbacks.onSuccess({ url: context.url, data: merged.buffer }, makeStats(total, total, now), context, null);
+            } else {
+              callbacks.onSuccess({ url: context.url, data: new ArrayBuffer(0) }, makeStats(bytesTotal, bytesTotal, now), context, null);
+            }
+          },
+          onError: function (e) {
+            callbacks.onError({ code: 0, text: e.message }, context, null);
+          },
+        });
+
+        const worker = getWorker();
+        worker.postMessage({ type: 'seg_start', segId: segId, keyHex: keyHex });
+
+        (async () => {
+          try {
+            const res = await fetch(context.url, { signal: ctrl.signal, cache: 'no-store', headers: { Accept: 'application/octet-stream' } });
+
+            if (!res.ok) {
+              _handlers.delete(segId);
+              worker.postMessage({ type: 'seg_abort', segId: segId });
+              callbacks.onError({ code: res.status, text: res.statusText }, context, null);
+              return;
+            }
+
+            const reader = res.body.getReader();
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+              worker.postMessage({ type: 'seg_bytes', segId: segId, chunk: chunk }, [chunk]);
+            }
+            worker.postMessage({ type: 'seg_end', segId: segId });
+          } catch (e) {
+            _handlers.delete(segId);
+            worker.postMessage({ type: 'seg_abort', segId: segId });
+            if (!e || e.name !== 'AbortError') {
+              callbacks.onError({ code: 0, text: (e && e.message) || 'fetch error' }, context, null);
+            }
+          }
+        })();
+      }
+
+      abort() {
+        if (this._abort) this._abort.abort();
+        if (super.abort) super.abort();
+      }
+    }
+
+    return BinLoader;
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // NOTA IMPORTANTE (fix CORS): esta página deixou de fazer o handshake
+  // ECDH via fetch() à nossa própria API. A WebView corre numa origem
+  // sintética (ex: https://appassets.androidplatform.net no Android) que
+  // NÃO está na allowlist de CORS do backend ([[default]].js ALLOWED_ORIGINS
+  // só inclui os domínios do site + localhost:3000/3001) — qualquer fetch
+  // daqui para a API é bloqueado pelo próprio motor antes de chegar à rede,
+  // e aparecia sempre como falha genérica de handshake.
+  //
+  // O handshake (geração da chave EC + GET /content/:id/stream) e o
+  // heartbeat (POST /content/:id/heartbeat) passaram a correr em Dart
+  // nativo (Dio), que não está sujeito a CORS. Esta página só recebe
+  // masterUrl/drmKeyHex já resolvidos e só faz fetch ao CDN de vídeo
+  // (raw.githubusercontent.com/Cloudflare), que já é cross-origin
+  // permissivo — é o mesmo domínio que o próprio site busca a partir do
+  // browser, por isso tem de aceitar qualquer origem.
+  // ───────────────────────────────────────────────────────────────────────
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Orquestração — cópia fiel do fluxo init()/heartbeat de ShakaPlayer.tsx
+  // ───────────────────────────────────────────────────────────────────────
+  var video = document.getElementById('v');
+  var hls = null;
+  var lastProgressSent = 0;
+  var lastHeartbeatSent = 0;
+
+  window.startPixgoPlayer = function (config) {
+    // config já vem resolvido do Dart nativo: { masterUrl, drmKeyHex, quality, startTime, poster }
+    var masterUrl = config.masterUrl;
+    var drmKeyHex = config.drmKeyHex;
+    var startTime = config.startTime || 0;
+    if (config.poster) video.poster = config.poster;
+
+    bridge({ type: 'loading' });
+
+    try {
+      if (!masterUrl) throw new Error('No stream URL');
+
+      if (!window.Hls || !Hls.isSupported()) {
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = masterUrl;
+          video.play().catch(function () {});
+          bridge({ type: 'ready', quality: config.quality || '' });
+        } else {
+          bridge({ type: 'error', stage: 'unsupported', message: 'HLS não suportado por este WebView' });
+        }
+        return;
+      }
+
+      hls = new Hls({
+        loader: drmKeyHex ? makeBinLoader(Hls, drmKeyHex) : Hls.DefaultConfig.loader,
+        startPosition: startTime || 0,
+        progressive: true,
+        fragLoadingTimeOut: 0,
+        manifestLoadingTimeOut: 20000,
+        levelLoadingTimeOut: 20000,
+        fragLoadingMaxRetry: 4,
+        fragLoadingRetryDelay: 500,
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        backBufferLength: 60,
+        enableWorker: true,
+      });
+
+      hls.on(Hls.Events.MANIFEST_PARSED, function (_e, data) {
+        var lvl = (data.levels && data.levels[hls.currentLevel]) || (data.levels && data.levels[0]);
+        bridge({ type: 'ready', quality: lvl && lvl.height ? (lvl.height + 'p') : (config.quality || '') });
+        video.play().catch(function () {});
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, function (_e, data) {
+        var lvl = hls.levels && hls.levels[data.level];
+        if (lvl && lvl.height) bridge({ type: 'quality', quality: lvl.height + 'p' });
+      });
+
+      hls.on(Hls.Events.ERROR, function (_e, data) {
+        if (!data.fatal) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          bridge({ type: 'error', stage: 'network', message: (data.details || 'network error') + ' — a tentar recuperar' });
+          hls.startLoad();
+        } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          bridge({ type: 'error', stage: 'media', message: (data.details || 'media error') + ' — a tentar recuperar' });
+          hls.recoverMediaError();
+        } else {
+          bridge({ type: 'error', stage: 'hls_fatal', message: data.details || 'erro fatal do hls.js' });
+        }
+      });
+
+      hls.loadSource(masterUrl);
+      hls.attachMedia(video);
+    } catch (e) {
+      bridge({ type: 'error', stage: 'init', message: (e && e.message) || 'Falha ao iniciar o player' });
+      return;
+    }
+
+    if (startTime > 0) {
+      video.addEventListener('loadedmetadata', function once() {
+        video.currentTime = startTime;
+        video.removeEventListener('loadedmetadata', once);
+      });
+    }
+
+    // Progresso: reportado ao Dart, que grava via progressApi (nativo).
+    video.addEventListener('timeupdate', function () {
+      var now = Date.now();
+      if (now - lastProgressSent >= 15000) {
+        lastProgressSent = now;
+        bridge({ type: 'progress', currentTime: video.currentTime, duration: video.duration || 0 });
+      }
+      // Heartbeat: reportado ao Dart (POST /heartbeat é feito nativamente —
+      // um fetch() daqui para a nossa API seria bloqueado por CORS, ver
+      // nota acima). Cadência igual à do site: 30s enquanto reproduz.
+      if (!video.paused && !video.ended && now - lastHeartbeatSent >= 30000) {
+        lastHeartbeatSent = now;
+        bridge({ type: 'heartbeat', currentTime: video.currentTime });
+      }
+    });
+
+    video.addEventListener('ended', function () {
+      bridge({ type: 'ended' });
+    });
+  };
+  </script>
+</body>
+</html>
