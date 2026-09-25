@@ -5,7 +5,20 @@ import 'package:go_router/go_router.dart';
 import '../../core/theme.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_client.dart';
+import 'hub_login_webview_screen.dart';
 
+/// LoginScreen — login tradicional + "Continuar com Google" (pendência
+/// #11). O Google é uma opção ADICIONAL — o login tradicional continua
+/// 100% intacto.
+///
+/// O botão de Google abre HubLoginWebViewScreen — a página REAL de login
+/// do hub (app.pixgo.qzz.io), a mesma para onde o próprio frontend_web já
+/// redirecciona (ver frontend_web/src/app/auth/login/page.tsx: o site não
+/// tem UI de login própria há muito). É lá — não aqui, não no
+/// pixel_service_v1 — que vive o botão "Continuar com Google" real, já em
+/// produção (app.rar/GoogleAuthButton.tsx, falando com api-core). Ver o
+/// comentário longo em hub_login_webview_screen.dart para os detalhes da
+/// arquitectura (SSO via cookie partilhado `pixgo_session`).
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
 
@@ -18,6 +31,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   final _password = TextEditingController();
   bool _showPw = false;
   String? _error;
+  bool _googleLoading = false;
 
   @override
   void dispose() {
@@ -39,6 +53,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       });
     } catch (_) {
       setState(() => _error = 'Falha ao entrar. Tente novamente.');
+    }
+  }
+
+  Future<void> _openGoogleLogin() async {
+    if (_googleLoading) return;
+    setState(() { _error = null; _googleLoading = true; });
+    try {
+      final ok = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(builder: (_) => const HubLoginWebViewScreen()),
+      );
+      if (ok != true && mounted) {
+        // false/null = utilizador fechou a WebView sem terminar — não é erro.
+      }
+    } finally {
+      if (mounted) setState(() => _googleLoading = false);
     }
   }
 
@@ -135,6 +164,33 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                             )
                           : const Text('Entrar'),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(children: [
+                      const Expanded(child: Divider()),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Text('ou', style: TextStyle(color: AppColors.textMuted, fontSize: 12)),
+                      ),
+                      const Expanded(child: Divider()),
+                    ]),
+                    const SizedBox(height: 16),
+                    OutlinedButton(
+                      onPressed: _googleLoading ? null : _openGoogleLogin,
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: AppColors.border),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      child: _googleLoading
+                          ? const SizedBox(
+                              height: 18, width: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.textMuted),
+                            )
+                          : Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                              const Icon(Icons.g_mobiledata, size: 26, color: AppColors.textTitle),
+                              const SizedBox(width: 6),
+                              const Text('Continuar com Google', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                            ]),
                     ),
                     const SizedBox(height: 18),
                     const Divider(),

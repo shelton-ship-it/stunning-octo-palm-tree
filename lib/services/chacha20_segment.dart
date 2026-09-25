@@ -6,9 +6,11 @@ import 'dart:typed_data';
 /// reiniciado a 1 em CADA chunk, porque cada chunk tem o seu próprio
 /// nonce de 12 bytes).
 ///
-/// Usado SÓ para downloads offline (GET /content/:id/download) — o único
-/// caminho de dados desta app que decripta em Dart. VOD usa WebView (o
-/// ShakaPlayer real decripta) e canais não têm DRM nenhum.
+/// Usado tanto pelos downloads offline (GET /content/:id/download) como
+/// pelo player nativo em directo (ver local_hls_proxy.dart, pendência #6)
+/// — é a MESMA rotina de decifra nos dois casos, só muda a origem dos
+/// bytes cifrados (ficheiro descarregado vs. segmento buscado em tempo
+/// real). Canais ao vivo não têm DRM nenhum, por isso não passam por aqui.
 ///
 /// Formato "chunk-v2" (igual, confirmado no worker real):
 ///   [4 bytes LE: nChunks]  (0 ou >=100000 → segmento vazio)

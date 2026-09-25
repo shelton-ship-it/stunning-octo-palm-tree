@@ -1,9 +1,10 @@
-import 'dart:io';
 import 'package:cookie_jar/cookie_jar.dart';
 import 'package:dio/dio.dart';
 import 'package:dio_cookie_manager/dio_cookie_manager.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 /// api_client.dart — equivalente Dart de lib/api.ts + a lógica authedFetch de
@@ -237,6 +238,30 @@ class ApiClient {
       ));
     }
   }
+
+  static const _cookieReadChannel = MethodChannel('site.pixgo.app/webview_cookies');
+
+  /// Sentido inverso de [syncSessionCookieToWebView] — pendência #11
+  /// (Login Google). Depois de o utilizador terminar sessão na página
+  /// REAL do hub (dentro de uma WebView, ver hub_login_webview_screen.dart),
+  /// lê o cookie `pixgo_session` que o hub já deixou gravado nativamente
+  /// (httpOnly — nem JS nem o webview_flutter conseguem ler isto, só o
+  /// Android nativo, daí o MethodChannel em MainActivity.kt). O valor
+  /// desse cookie É o mesmo JWT que o login tradicional devolve no corpo
+  /// da resposta (ver routes/auth.js, `setSharedSessionCookie(res, token)`
+  /// usa a MESMA variável `token`) — por isso serve directamente como
+  /// Bearer token da app, sem mais nenhuma chamada.
+  Future<String?> readHubSessionCookie() async {
+    try {
+      final value = await _cookieReadChannel.invokeMethod<String>('getCookie', {
+        'url': kHubBase,
+        'name': 'pixgo_session',
+      });
+      return (value != null && value.isNotEmpty) ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 /// ── Endpoints agrupados, espelhando lib/api.ts ──────────────────────────
@@ -273,25 +298,43 @@ class ProfilesApi {
   Future<void> delete(String id) async => await _c.delete('/auth/profiles/$id');
 }
 
+/// contentLang() — porte exato de lib/api.ts (frontend real): o idioma do
+/// CONTEÚDO do catálogo é o idioma de UI que a pessoa escolheu (chave
+/// 'pixgo_lang', a mesma gravada por LocaleController), não um valor fixo.
+/// O backend só serve pt/en (SUPPORTED_LANGUAGES em lib/geoip.js) — 'es'
+/// cai em 'en' até o catálogo suportar espanhol, exatamente como no site.
+/// contentApi.get mantém 'en' fixo por decisão própria do site (não usa
+/// esta função) — só catalogApi.* usa.
+const _kContentLangs = ['pt', 'en'];
+Future<String> contentLang() async {
+  final prefs = await SharedPreferences.getInstance();
+  final saved = prefs.getString('pixgo_lang') ?? 'pt';
+  final code = saved.length >= 2 ? saved.substring(0, 2) : saved;
+  return _kContentLangs.contains(code) ? code : 'en';
+}
+
 class CatalogApi {
   final _c = ApiClient.instance;
   Future<Map<String, dynamic>> list([Map<String, dynamic> params = const {}]) async {
-    final p = {'lang': 'en', ...params};
+    final p = {'lang': await contentLang(), ...params};
     return await _c.get('/catalog?${Uri(queryParameters: _stringify(p)).query}');
   }
   Future<List<dynamic>> featured([int limit = 6]) async {
-    final r = await _c.get('/catalog/featured?limit=$limit&lang=en');
+    final lang = await contentLang();
+    final r = await _c.get('/catalog/featured?limit=$limit&lang=$lang');
     return (r is List) ? r : (r['items'] ?? []);
   }
   Future<List<dynamic>> latest(String type, [int limit = 12]) async {
-    final r = await _c.get('/catalog/latest?type=$type&limit=$limit&lang=en');
+    final lang = await contentLang();
+    final r = await _c.get('/catalog/latest?type=$type&limit=$limit&lang=$lang');
     return (r is List) ? r : (r['items'] ?? []);
   }
   /// GET /catalog/home — usado pela home real do pixel (featured/popular/
   /// latest por tipo já agrupados num único pedido).
   Future<Map<String, dynamic>> home([String? profileId]) async {
+    final lang = await contentLang();
     final qp = profileId != null ? '&profile_id=$profileId' : '';
-    return await _c.get('/catalog/home?lang=en$qp');
+    return await _c.get('/catalog/home?lang=$lang$qp');
   }
 }
 
@@ -311,6 +354,25 @@ class ContentApi {
     final qp = episodeId != null ? '&episode=$episodeId' : '';
     return await _c.get('/content/$id/download?lang=$lang$qp');
   }
+  /// GET /api/content/:id/stream — pendência #6 (player nativo sem
+  /// WebView). Porte fiel de performECDH() em ShakaPlayer.tsx: o
+  /// `clientPubKey` é gerado por [generateEcdhClientPubKeyB64] (ver
+  /// ecdh_keygen.dart) e devolve `master_url`/`drm_key_hex` (chave já em
+  /// claro — ver comentário no ecdh_keygen.dart) usados por
+  /// [LocalHlsProxy] para decifrar os segmentos `.bin` em tempo real.
+  Future<Map<String, dynamic>> stream(
+    String id, {
+    String? episodeId,
+    required String clientPubKeyB64,
+    String lang = 'en',
+  }) async {
+    final qp = <String, String>{'lang': lang, 'clientPubKey': clientPubKeyB64};
+    if (episodeId != null) qp['episode'] = episodeId;
+    final query = qp.entries
+        .map((e) => '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+        .join('&');
+    return await _c.get('/content/$id/stream?$query') as Map<String, dynamic>;
+  }
   /// POST /api/content/:id/heartbeat — chamado a cada 120s enquanto o vídeo
   /// está em reprodução (HEARTBEAT_INTERVAL_MS=120000 no backend,
   /// middleware/rate-limit.js). Devolve o corpo — 409 (sessão substituída)
@@ -324,10 +386,14 @@ class ContentApi {
 
 class SearchApi {
   final _c = ApiClient.instance;
+  /// GET /search — porte exato de lib/api.ts real: NÃO envia `lang`. O
+  /// servidor decide sozinho (cookie/GeoIP). Antes esta chamada forçava
+  /// `lang=en` sempre, o que quebrava a busca de conteúdo em português —
+  /// bug real confirmado, causa da busca devolver vazio com conteúdo real.
   Future<Map<String, dynamic>> search(String q, [Map<String, dynamic> p = const {}]) async =>
-      await _c.get('/search?${Uri(queryParameters: _stringify({'q': q, 'lang': 'en', ...p})).query}');
+      await _c.get('/search?${Uri(queryParameters: _stringify({'q': q, ...p})).query}');
   Future<List<dynamic>> popular() async {
-    final r = await _c.get('/search/popular?lang=en');
+    final r = await _c.get('/search/popular');
     return (r is List) ? r : [];
   }
 }
@@ -339,6 +405,16 @@ class SearchApi {
 /// isChannelHeartbeat). As rotas /channels, /channels/categories e
 /// /channels/search NÃO existem no pixel_service_v1 real — a versão
 /// anterior deste ficheiro assumia-as e nunca funcionou.
+/// DeviceApi — pareamento de TV (api-core). O telemóvel pede um código de
+/// 6 dígitos (POST /auth/device/code, autenticado) e a pessoa digita-o na
+/// TV; a TV chama /auth/device/activate sozinha (não é o telemóvel que
+/// chama isso). Faltava por completo um ecrã para gerar/mostrar este
+/// código — a lógica já existia no backend, só não tinha UI nenhuma.
+class DeviceApi {
+  final _c = ApiClient.instance;
+  Future<Map<String, dynamic>> code() async => await _c.corePost('/auth/device/code');
+}
+
 class ChannelsApi {
   final _c = ApiClient.instance;
   /// GET /api/channels/:id — gate chamado antes de começar a tocar.
@@ -485,3 +561,4 @@ final progressApi = ProgressApi();
 final myListApi = MyListApi();
 final contactApi = ContactApi();
 final chatApi = ChatApi();
+final deviceApi = DeviceApi();

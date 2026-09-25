@@ -79,17 +79,31 @@ class _ContentDetailScreenState extends ConsumerState<ContentDetailScreen> {
     }
   }
 
-  Future<void> _toggleList() async {
+  /// Padrão otimista (pendência #10, Rodada 1) — porte fiel de toggleList()
+  /// em main/content/[id]/page.tsx: a UI muda IMEDIATAMENTE (sem esperar a
+  /// API), o pedido é disparado em paralelo (sem await), e só reverte + avisa
+  /// se falhar de facto. Antes disto, a UI só actualizava DEPOIS da resposta
+  /// da API (sensação de atraso a cada toque); agora é instantâneo, igual ao
+  /// site.
+  void _toggleList() {
     final profiles = ref.read(authProvider).profiles;
     if (profiles.isEmpty) return;
-    try {
-      if (_inList) {
-        await myListApi.remove(profiles.first.id, widget.id);
-      } else {
-        await myListApi.add(profiles.first.id, widget.id);
-      }
-      setState(() => _inList = !_inList);
-    } catch (_) {}
+    final profileId = profiles.first.id;
+    if (_inList) {
+      setState(() => _inList = false);
+      myListApi.remove(profileId, widget.id).catchError((_) {
+        if (!mounted) return;
+        setState(() => _inList = true);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Falha de rede. Tente novamente.')));
+      });
+    } else {
+      setState(() => _inList = true);
+      myListApi.add(profileId, widget.id).catchError((_) {
+        if (!mounted) return;
+        setState(() => _inList = false);
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Falha de rede. Tente novamente.')));
+      });
+    }
   }
 
   @override
@@ -171,34 +185,34 @@ class _ContentDetailScreenState extends ConsumerState<ContentDetailScreen> {
                 )).toList()),
               ],
               const SizedBox(height: 16),
-              Row(children: [
-                Expanded(
-                  child: ElevatedButton.icon(
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  ElevatedButton.icon(
                     onPressed: () => context.push('/main/watch/${widget.id}'),
                     icon: const Icon(Icons.play_arrow, size: 20),
                     label: const Text('Assistir'),
                   ),
-                ),
-                const SizedBox(width: 10),
-                OutlinedButton.icon(
-                  onPressed: _toggleList,
-                  icon: Icon(_inList ? Icons.bookmark : Icons.bookmark_border, size: 18),
-                  label: Text(_inList ? 'Na lista' : 'Minha Lista'),
-                ),
-                const SizedBox(width: 10),
-                if (downloadAvailable && !isEpisodic) _downloadButton(key: widget.id, title: title, poster: poster),
-                if (downloadAvailable && !isEpisodic) const SizedBox(width: 10),
-                OutlinedButton(
-                  onPressed: () async {
-                    await Clipboard.setData(ClipboardData(text: '$kWebBase/main/content/${widget.id}'));
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Link copiado!')));
-                    }
-                  },
-                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12)),
-                  child: const Icon(Icons.share_outlined, size: 18),
-                ),
-              ]),
+                  OutlinedButton.icon(
+                    onPressed: _toggleList,
+                    icon: Icon(_inList ? Icons.bookmark : Icons.bookmark_border, size: 18),
+                    label: Text(_inList ? 'Na lista' : 'Minha Lista'),
+                  ),
+                  if (downloadAvailable && !isEpisodic) _downloadButton(key: widget.id, title: title, poster: poster),
+                  OutlinedButton(
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: '$kWebBase/main/content/${widget.id}'));
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Link copiado!')));
+                      }
+                    },
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12)),
+                    child: const Icon(Icons.share_outlined, size: 18),
+                  ),
+                ],
+              ),
               const SizedBox(height: 20),
               const Text('Sobre', style: TextStyle(fontFamily: AppTheme.fontDisplay, fontWeight: FontWeight.w800, fontSize: 15)),
               const SizedBox(height: 6),

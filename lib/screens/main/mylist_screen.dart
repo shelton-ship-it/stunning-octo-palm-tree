@@ -45,6 +45,24 @@ class _MyListScreenState extends ConsumerState<MyListScreen> {
     }
   }
 
+  /// Padrão otimista (pendência #10, Rodada 1) — porte fiel do `remove()`
+  /// em main/mylist/page.tsx: tira o item da grelha JÁ (sem esperar a
+  /// API), dispara a remoção real em paralelo, e só volta a inserir o
+  /// item (na mesma posição) se o pedido falhar de facto.
+  void _remove(String contentId) {
+    final profiles = ref.read(authProvider).profiles;
+    if (profiles.isEmpty) return;
+    final idx = _items.indexWhere((i) => i.id == contentId);
+    if (idx == -1) return;
+    final removed = _items[idx];
+    setState(() => _items.removeAt(idx));
+    myListApi.remove(profiles.first.id, contentId).catchError((_) {
+      if (!mounted) return;
+      setState(() => _items.insert(idx.clamp(0, _items.length), removed));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Falha de rede. Tente novamente.')));
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -89,6 +107,7 @@ class _MyListScreenState extends ConsumerState<MyListScreen> {
                       itemBuilder: (c, i) => ContentCardWidget(
                         item: _items[i],
                         onTap: () => context.go('/main/content/${_items[i].id}'),
+                        onRemove: () => _remove(_items[i].id),
                       ),
                     ),
         ),

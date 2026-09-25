@@ -8,6 +8,7 @@ import '../../models/models.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/api_client.dart';
 import '../../widgets/content_card.dart';
+import '../../widgets/skeletons.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -59,7 +60,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+          HeroSkeleton(),
+          SizedBox(height: 20),
+          ContentGridSkeleton(count: 9),
+        ]),
+      );
     }
     final hasAny = _featured.isNotEmpty || _movies.isNotEmpty || _series.isNotEmpty || _anime.isNotEmpty;
     if (!hasAny) {

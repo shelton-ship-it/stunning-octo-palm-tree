@@ -49,6 +49,9 @@ dependencies:
   #    próprio componente, exactamente como no site — nenhuma
   #    reimplementação em Dart. Ver watch_screen.dart.
   video_player: ^2.9.1
+  # Mantém o ecrã ligado enquanto um vídeo (VOD/canal/offline) está a
+  # tocar — não precisa de nenhuma permissão Android para isto.
+  wakelock_plus: ^1.2.8
   chewie: ^1.8.3
   webview_flutter: ^4.7.0
   webview_flutter_android: ^3.16.0
@@ -86,4 +89,5 @@ flutter:
 
   assets:
     - assets/icons/
+    - assets/icons/payments/
     - assets/i18n/

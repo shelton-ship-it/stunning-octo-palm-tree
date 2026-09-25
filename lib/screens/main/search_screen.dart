@@ -128,7 +128,7 @@ class _SearchScreenState extends State<SearchScreen> {
                           itemCount: _results.length,
                           itemBuilder: (c, i) => ContentCardWidget(
                             item: _results[i],
-                            onTap: () => context.go('/main/content/${_results[i].id}'),
+                            onTap: () => context.push('/main/watch/${_results[i].id}'),
                           ),
                         ),
                       ),

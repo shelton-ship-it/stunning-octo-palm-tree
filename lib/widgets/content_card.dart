@@ -8,8 +8,9 @@ class ContentCardWidget extends StatelessWidget {
   final ContentItem item;
   final VoidCallback? onTap;
   final VoidCallback? onAddToList;
+  final VoidCallback? onRemove;
 
-  const ContentCardWidget({super.key, required this.item, this.onTap, this.onAddToList});
+  const ContentCardWidget({super.key, required this.item, this.onTap, this.onAddToList, this.onRemove});
 
   @override
   Widget build(BuildContext context) {
@@ -51,6 +52,24 @@ class ContentCardWidget extends StatelessWidget {
                           shape: BoxShape.circle,
                         ),
                         child: const Icon(Icons.add, size: 16, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                // Remover da Minha Lista (pendência #10) — mesma "pill"
+                // circular do botão de adicionar, só muda o ícone/acção;
+                // nunca aparece junto com onAddToList (ecrãs diferentes).
+                if (onRemove != null)
+                  Positioned(
+                    top: 8, left: 8,
+                    child: GestureDetector(
+                      onTap: onRemove,
+                      child: Container(
+                        width: 24, height: 24,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.68),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.close, size: 15, color: Colors.white),
                       ),
                     ),
                   ),

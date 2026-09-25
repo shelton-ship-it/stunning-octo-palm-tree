@@ -7,6 +7,8 @@ import '../../core/theme.dart';
 import '../../l10n/app_localizations.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/channels_source.dart';
+import '../../widgets/plan_modals.dart';
+import '../../widgets/skeletons.dart';
 
 /// ChannelsScreen — porte fiel de main/channels/page.tsx (pixel.zip).
 /// A listagem é 100% client-side (ChannelsSource → jsDelivr), igual ao
@@ -35,16 +37,54 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   String? _selectedCategory;
   List<({String name, String slug, int count})> _categories = [];
 
+  // Filtro padrão "Anime" (pendência #3) — réplica fiel de
+  // main/channels/page.tsx: a categoria real chamada "Animation" fica
+  // seleccionada por omissão (comparação normalizada, sem acentos/caixa,
+  // igual ao normalizeStr do site) até o utilizador procurar, escolher
+  // outra categoria à mão, ou desligar no botão "Anime"/"Todos".
+  bool _animeOnly = true;
+
   bool _disposed = false;
   final _searchController = TextEditingController();
 
   bool get _hasUser => ref.read(authProvider).isLoggedIn;
 
+  String _normalizeStr(String s) => s.trim().toLowerCase();
+
+  /// Slug real da categoria "Animation" (nome real dos dados do iptv-org —
+  /// "Anime" é só o rótulo mostrado ao utilizador, igual ao site).
+  String? get _animeCategorySlug {
+    for (final c in _categories) {
+      if (_normalizeStr(c.name) == 'animation') return c.slug;
+    }
+    return null;
+  }
+
+  /// Categoria efectivamente aplicada ao pedido — a escolhida à mão tem
+  /// sempre prioridade; o default "Anime" só entra quando não há busca
+  /// nem categoria manual seleccionada (igual ao `effectiveCategory` do
+  /// site).
+  String? get _effectiveCategory =>
+      (_animeOnly && _search.isEmpty && _selectedCategory == null) ? _animeCategorySlug : _selectedCategory;
+
+  String? get _effectiveCategoryLabel {
+    final eff = _effectiveCategory;
+    if (eff == null) return null;
+    return _categories.firstWhere((c) => c.slug == eff, orElse: () => (name: eff, slug: eff, count: 0)).name;
+  }
+
   @override
   void initState() {
     super.initState();
-    _loadCategories();
-    _load(1);
+    _bootstrap();
+  }
+
+  /// Espera as categorias chegarem antes do 1º pedido de canais — garante
+  /// que o filtro "Anime" já está disponível logo na abertura da página
+  /// (em vez de arriscar uma corrida entre os dois pedidos em paralelo).
+  Future<void> _bootstrap() async {
+    await _loadCategories();
+    await _load(1);
   }
 
   @override
@@ -67,15 +107,25 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   Future<void> _load(int page) async {
     setState(() => _loading = true);
     try {
+      final effective = _effectiveCategory;
       final res = await ChannelsSource.list(
         page: page,
         limit: _limit,
-        category: _selectedCategory,
+        category: effective,
         hasUser: _hasUser,
       );
       if (_disposed) return;
+      // Quando o filtro efectivo é "Animation" só por causa do default (o
+      // utilizador não escolheu nada à mão), o site restringe ainda por
+      // cima aos canais com logo — réplica fiel de main/channels/page.tsx.
+      // O total/paginação não reflectem este filtro extra (comportamento
+      // conhecido do site, mantido igual de propósito).
+      var channels = res.channels;
+      if (_animeOnly && _search.isEmpty && _selectedCategory == null && effective != null) {
+        channels = channels.where((c) => c.logo != null).toList();
+      }
       setState(() {
-        _channels = res.channels;
+        _channels = channels;
         _total = res.total;
         _totalPages = res.pages;
         _page = page;
@@ -88,7 +138,24 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   }
 
   Future<void> _onCategoryChanged(String? slug) async {
-    setState(() => _selectedCategory = slug);
+    _searchController.clear();
+    setState(() {
+      _search = '';
+      _selectedCategory = slug;
+      _animeOnly = false;
+    });
+    await _load(1);
+  }
+
+  /// Botão "Anime"/"Todos" — liga/desliga o default, sempre limpando a
+  /// busca e a categoria manual (igual ao toggle do site).
+  Future<void> _toggleAnimeOnly() async {
+    _searchController.clear();
+    setState(() {
+      _search = '';
+      _animeOnly = !_animeOnly;
+      _selectedCategory = null;
+    });
     await _load(1);
   }
 
@@ -149,7 +216,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading && _channels.isEmpty) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const ChannelsGridSkeleton(count: 12);
     }
 
     return Column(
@@ -180,7 +247,7 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
               ),
             ]),
             Text(
-              '$_total ${context.t('channels.available')}${_selectedCategory != null ? ' · $_selectedCategory' : ''}',
+              '$_total ${context.t('channels.available')}${_effectiveCategoryLabel != null ? ' · $_effectiveCategoryLabel' : ''}',
               style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
             ),
           ]),
@@ -202,6 +269,8 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             ),
           ),
           if (_categories.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            _AnimeToggleChip(active: _animeOnly, onTap: _toggleAnimeOnly),
             const SizedBox(width: 8),
             _CategoryDropdown(categories: _categories, selected: _selectedCategory, onChanged: _onCategoryChanged),
           ],
@@ -269,6 +338,35 @@ class _ChannelsScreenState extends ConsumerState<ChannelsScreen> {
             ]),
           ),
       ],
+    );
+  }
+}
+
+class _AnimeToggleChip extends StatelessWidget {
+  final bool active;
+  final VoidCallback onTap;
+  const _AnimeToggleChip({required this.active, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: Container(
+        height: 38,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: active ? AppColors.primary.withOpacity(0.15) : AppColors.cardBg,
+          border: Border.all(color: active ? AppColors.primary : AppColors.border),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Center(
+          child: Text(
+            active ? 'Anime' : 'Todos',
+            style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: active ? AppColors.primary : AppColors.textLight),
+          ),
+        ),
+      ),
     );
   }
 }

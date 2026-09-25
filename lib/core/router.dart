@@ -13,6 +13,7 @@ import '../screens/main/channels_screen.dart';
 import '../screens/main/mylist_screen.dart';
 import '../screens/main/search_screen.dart';
 import '../screens/main/account_screen.dart';
+import '../screens/main/legal_screen.dart';
 import '../screens/main/downloads_screen.dart';
 import '../screens/main/plans_screen.dart';
 import '../screens/main/checkout_screen.dart';
@@ -89,6 +90,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           GoRoute(path: '/main/mylist', builder: (c, s) => const MyListScreen()),
           GoRoute(path: '/main/search', builder: (c, s) => const SearchScreen()),
           GoRoute(path: '/main/account', builder: (c, s) => const AccountScreen()),
+          GoRoute(path: '/main/legal', builder: (c, s) => const LegalScreen()),
           GoRoute(path: '/main/downloads', builder: (c, s) => const DownloadsScreen()),
           GoRoute(path: '/main/plans', builder: (c, s) => const PlansScreen()),
           GoRoute(
